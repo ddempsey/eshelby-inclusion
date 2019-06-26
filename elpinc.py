@@ -7,22 +7,30 @@ from numpy.linalg import inv
 from matplotlib import pyplot as plt
 from multiprocessing import Pool
 from time import time
+from scipy.special import ellipkinc, ellipeinc
 
 # classes
 class Inclusion(object):
     def __init__(self):
+        # stress/strain ordering is: _xx, _xy, _xz, _yy, _yz, _zz
         self.vm = 0.25
         self.Em = 2.2e10
         self.vh = 0
         self.Eh = 0
         self.dim = [1, .2, 20]
-        self.ang = [0, 0, 0]
+        self.ang = np.array([0, 0, 0])
         self.stressvec = [-1.e6, 0, 0, 0, 1.e6, 0]
         self.eigp = [0, 0, 0, 0, 0, 0]
         self.out = InclusionOutput()
+        self.x = np.array([0.])
+        self.y = np.array([0.])
+        self.z = np.array([0.])
     def rotate_stress(self):
         ''' rotate the stress vector into ellipsoid coordinates '''
-        self.stressvec = rotate(self.stressvec, self.R_i, self.Rb) 
+        self.stressvec = rotate(self.stressvec, self.R, self.R_i) 
+    def rotate_eigp(self):
+        ''' rotate the eigenstrain vector into ellipsoid coordinates '''
+        self.eigp = rotate(self.eigp, self.R, self.R_i) 
     def compute_applied_strain(self):
         ''' compute the applied strain '''
         self.epsvec=np.dot(inv(self.Cm),self.stressvec)
@@ -37,10 +45,10 @@ class Inclusion(object):
         if any(np.array(a)<0):
             raise ValueError('Ellipsoid dimensions (a) must be positive')
         
-        Ifir=np.ones(3)
-        Isec = np.ones((3,3))
         if (abs(a[0]-a[1])<(1e-6*a[0])) and (abs(a[1]-a[2])<(1e-6*a[0])):  # checks that geometric mean of ellipsoid dimensions is not more than 1e-6 different from first dimension
             # Spherical Case
+            Ifir=np.ones(3)
+            Isec = np.ones((3,3))
             Ifir=(4/3)*np.pi*Ifir
             Isec=(4/5)*np.pi*a[0]**2*Isec
             
@@ -48,10 +56,12 @@ class Inclusion(object):
             # Prolate Spheriod Case
             rat=a[0]/a[2]	
             
+            Ifir=np.zeros(3)
             Ifir[1]=(2*np.pi*a[0]*a[2]**2/((a[0]**2-a[2]**2)**(3/2)))*(rat*np.sqrt(rat**2-1)-np.arccosh(rat))
             Ifir[2]=Ifir[1]
             Ifir[0]=4*np.pi-2*Ifir[1]
             
+            Isec = np.zeros((3,3))
             Isec[0,1]=(Ifir[1]-Ifir[0])/(a[0]**2-a[1]**2)
             Isec[0,2]=Isec[0,1]
             Isec[1,0]=Isec[0,1]
@@ -66,10 +76,12 @@ class Inclusion(object):
             # Oblate Spheriod Case
             rat=a[2]/a[0]	
             
+            Ifir=np.zeros(3)
             Ifir[0]=(2*np.pi*a[0]**2*a[2]/((a[0]**2-a[2]**2)**(3/2)))*(np.arccos(rat)-rat*np.sqrt(1-rat**2))
             Ifir[1]=Ifir[0]
             Ifir[2]=4*np.pi-2*Ifir[0]
             
+            Isec = np.ones((3,3))
             Isec[0,2]=(Ifir[0]-Ifir[2])/(a[2]**2-a[0]**2)
             Isec[2,0]=Isec[0,2]
             Isec[1,2]=Isec[0,2]
@@ -83,14 +95,16 @@ class Inclusion(object):
         else:
             # Triaxial Ellipsoid Case    
             theta=np.arcsin(np.sqrt(1-(a[2]/a[0])**2)) # amplitude
-            # k=((a[0]**2-a[1]**2)/(a[0]**2-a[2]**2))**(1/2) # the elliptic modulus
-            m=(a[0]**2-a[1]**2)/(a[0]**2-a[2]**2) # m=k**2 is the parameter
-            F,E,Z = elliptic12(theta, m) #this sets the tolerance to eps, add a third argument to set to a larger tol
+            m = np.sqrt((a[0]**2-a[1]**2)/(a[0]**2-a[2]**2)) # m=k**2 is the parameter
+            F = ellipkinc(theta, m)
+            E = ellipeinc(theta, m)
             # Mura 11.17
+            Ifir=np.zeros(3)
             Ifir[0]=(4*np.pi*np.prod(a)/((a[0]**2-a[1]**2)*np.sqrt(a[0]**2-a[2]**2)))*(F-E)
             Ifir[2]=(4*np.pi*np.prod(a)/((a[1]**2-a[2]**2)*np.sqrt((a[0]**2-a[2]**2))))*(a[1]*np.sqrt((a[0]**2-a[2]**2))/(a[0]*a[2])-E)
             Ifir[1]=4*np.pi-Ifir[0]-Ifir[2]
             
+            Isec = np.ones((3,3))
             Isec[0,1]=(Ifir[1]-Ifir[0])/(a[0]**2-a[1]**2)
             Isec[1,2]=(Ifir[2]-Ifir[1])/(a[1]**2-a[2]**2)
             Isec[2,0]=(Ifir[0]-Ifir[2])/(a[2]**2-a[0]**2)
@@ -129,12 +143,17 @@ class Inclusion(object):
             [S3311,  0,      0,      S3322,  0,      S3333]]
         )
     def setup_grid(self):
+        
+        for att in ['x', 'y', 'z']:
+            v = self.__getattribute__(att)
+            if not isiterable(v):
+                self.__setattr__(att, np.array([v,]))
+
         self.out.X, self.out.Y, self.out.Z = np.meshgrid(self.x,self.y,self.z, indexing='ij')
         self.Nx = len(self.x)
         self.Ny = len(self.y)
         self.Nz = len(self.z)
-        
-    def solve(self, computeDisp=False, computeStress=False, computeStrain=False, ncpus = 1):
+    def solve(self, computeDisp=True, computeStress=True, computeStrain=True, ncpus = 1):
         '''
         '''
         # compute stiffness tensors
@@ -153,21 +172,27 @@ class Inclusion(object):
                     
         # pre-rotation in order of [z,y,x]
         self.ang_i = np.pi/2*np.array([exh[1,2], exh[0,2], exh[0,1]])
-        self.R_i,self.Rb_i = Rmats(self.ang_i)
+        #self.ang_i = np.pi/2*np.array([exh[0,1], exh[0,2], exh[1,2]])
+        #self.ang_i = np.array([0,0,0])
+        self.R_i = Rmats(self.ang_i)
 
         # rotation matrices w.r.t the ellipsoid
-        self.R,self.Rb = Rmats(self.ang)
+        self.R = Rmats(self.ang)
         # rotate stress w.r.t ellipsoid
         self.rotate_stress()
-        # compute the applied strain
+        # compute the applied strain due to remote stress (rotated)
         self.compute_applied_strain()
+        # rotate the eigen strain w.r.t ellipsoid
+        self.rotate_eigp()
         # compute the internal eshelby tensor.
         self.compute_internal_eshelby()
         # compute eigenstrain
         self.eigen=np.dot(inv(np.dot(self.Cm-self.Ch,self.S4)-self.Cm),(-np.dot(self.Cm-self.Ch,self.epsvec)-np.dot(self.Ch,self.eigp)))
         # compute inclusion internal strain and stress
-        self.incstrain = rotate(self.epsvec+np.dot(self.S4,self.eigen), self.R, self.Rb_i)
-        self.incstress = rotate(self.stressvec+np.dot(self.Cm,(np.dot(self.S4,self.eigen)-self.eigen)), self.R, self.Rb_i)
+        #self.incstrain = rotate(self.epsvec+istrain, self.R, self.R_i)
+        #self.incstress = rotate(self.stressvec+np.dot(self.Cm,(np.dot(self.S4,self.eigen)-self.eigen)), self.R, self.R_i)
+        self.incstrain = self.epsvec+np.dot(self.S4,self.eigen)
+        self.incstress = self.stressvec+np.dot(self.Cm,(np.dot(self.S4,self.eigen)-self.eigen))
 
         # setup the simulation grid
         self.setup_grid()
@@ -176,37 +201,39 @@ class Inclusion(object):
 
         if computeD4:
             if computeStrain:
-                strain = np.zeros((Nx,Ny,Nz,6))
+                e = np.zeros((self.Nx,self.Ny,self.Nz,6))
             if computeStress:
-                stress = np.zeros((Nx,Ny,Nz,6))
+                s = np.zeros((self.Nx,self.Ny,self.Nz,6))
         if computeDisp:
-            disp = np.zeros((Nx,Ny,Nz,3))
+            u = np.zeros((self.Nx,self.Ny,self.Nz,3))
         pars = []
-        for i in range(Nx):
-            for j in range(Ny):
-                for k in range(Nz):
-                    x = np.array([X[i,j,k], Y[i,j,k], Z[i,j,k]])
+        for i in range(self.Nx):
+            for j in range(self.Ny):
+                for k in range(self.Nz):
+                    x = np.array([self.out.X[i,j,k], self.out.Y[i,j,k], self.out.Z[i,j,k]])
                     pars.append([i,j,k,x])
 
-        args = (R, Rb, R_i, Rb_i, vm, dim, eigen, computeDisp, computeD4, computeStress, computeStrain, eigen, incstrain, incstress,epsvec,stressvec,Cm)
+        args = (self.R, self.R_i, self.vm, self.dim, computeDisp, computeD4, computeStress, computeStrain, self.eigen, self.incstrain, self.incstress,self.epsvec,self.stressvec,self.Cm)
         outs = run_all(pars, args, ncpus)
         for par, out in zip(pars,outs):
             i,j,k,x = par
             d,sn,sr = out
-            disp[i,j,k,:] = d
-            stress[i,j,k,:] = sr
-            strain[i,j,k,:] = sn
+            u[i,j,k,:] = d
+            s[i,j,k,:] = sr
+            e[i,j,k,:] = sn
 
         output = InclusionOutput()
-        output.x = X
-        output.y = Y
-        output.z = Z
+        output.x = self.out.X
+        output.y = self.out.Y
+        output.z = self.out.Z
         if computeDisp:
-            output.disp = disp
+            output.u = dict([(cpt, u[:,:,:,i]) for i,cpt in enumerate(['x','y','z'])])
         if computeStress:
-            output.stress = stress
+            output.s = dict([(cpt, s[:,:,:,i]) for i,cpt in enumerate(['xx','xy','xz','yy','yz','zz'])])
         if computeStrain:
-            output.strain = strain   
+            output.e = dict([(cpt, e[:,:,:,i]) for i,cpt in enumerate(['xx','xy','xz','yy','yz','zz'])])
+
+        self.sol = output
 
 class InclusionOutput(object):
     def __i__(self):
@@ -237,9 +264,7 @@ def Rmat(ang):
 def Rmats(ang):
     Rx,Ry,Rz = Rmat(ang)
     R = np.dot(np.dot(Rx,Ry),Rz)
-    Rx,Ry,Rz = Rmat(-ang)
-    Rb = np.dot(np.dot(Rz,Ry),Rx)
-    return R,Rb
+    return R#,Rb
 def vec2mat(v):
     ''' convert 6-element vector to 3x3 matrix'''
     v = np.array(v)
@@ -247,160 +272,13 @@ def vec2mat(v):
 def mat2vec(m):
     ''' convert 3x3 matrix to 6-element vector'''
     return np.array([m[0,0], m[0,1], m[0,2], m[1,-2], m[1,-1], m[-1,-1]])
-def rotate(vec, R, Rbi):
+def rotate(vec, R1, R2):
     ''' rotate a vector according to R and Rbi'''
     mat = vec2mat(vec)
-    rmat = np.dot(np.dot(np.dot(R,Rbi),mat),np.dot(R,Rbi))
+    #rmat = np.dot(np.dot(np.dot(R,Rbi),mat),np.dot(R,Rbi))
+    rmat = np.dot(np.dot(np.dot(R2,R1),mat),np.dot(R1.T,R2.T))
+    #rmat = np.dot(np.dot(np.dot(R,Rbi),mat),np.dot(Rbi.T,R.T))
     return mat2vec(rmat)
-def elliptic12(u, m, tol = None):
-    """
-    ELLIPTIC12 evaluates the value of the Incomplete Elliptic Integrals 
-    of the First, Second Kind and Jacobi's Zeta Function.
-    
-      [F,E,Z] = ELLIPTIC12(U,M,TOL) where U is a phase in radians, 0<M<1 is 
-      the module and TOL is the tolerance (optional). Default value for 
-      the tolerance is eps = 2.220e-16.
-    
-      ELLIPTIC12 uses the method of the Arithmetic-Geometric Mean 
-      and Descending Landen Transformation described in [1] Ch. 17.6,
-      to determine the value of the Incomplete Elliptic Integrals 
-      of the First, Second Kind and Jacobi's Zeta Function [1], [2].
-    
-          F(phi,m) = int(1/sqrt(1-m*sin(t)**2), t=0..phi)
-          E(phi,m) = int(sqrt(1-m*sin(t)**2), t=0..phi)
-          Z(phi,m) = E(u,m) - E(m)/K(m)*F(phi,m).
-    
-      Tables generating code ([1], pp. 613-621):
-          [phi,alpha] = meshgrid(0:5:90, 0:2:90)                  modulus and phase in degrees
-          [F,E,Z] = elliptic12(pi/180*phi, sin(pi/180*alpha)**2)  values of integrals
-    
-      See also ELLIPKE, ELLIPJ, ELLIPTIC3, THETA, AGM.
-    
-      References:
-      [1] M. Abramowitz and I.A. Stegun, "Handbook of Mathematical Functions", 
-          Dover Publications", 1965, Ch. 17.1 - 17.6 (by L.M. Milne-Thomson).
-      [2] D. F. Lawden, "Elliptic Functions and Applications"
-          Springer-Verlag, vol. 80, 1989
-
-      For support, please reply to 
-          moiseev[at]sissa.it, moiseev.igor[at]gmail.com
-          Moiseev Igor, 
-          34106, SISSA, via Beirut n. 2-4,  Trieste, Italy
-    
-      The code is optimized for ordered inputs produced by the functions 
-      meshgrid, ndgrid. To obtain maximum performace (up to 30) for singleton, 
-      1-dimensional and random arrays remark call of the function unique(.) 
-      and edit further code. 
-    """
-
-    if tol is None:
-        tol = np.finfo(float).eps
-    
-    if not np.isreal(u) or not np.isreal(m):
-       raise TypeError('Input arguments must be real.')
-    
-    u = iterable(u)
-    m = iterable(m)
-
-    if len(m)==1:
-        m = m*np.ones(np.shape(u))
-        
-    if len(u)==1:
-        u = u*np.ones(np.shape(m))
-        
-    if not (m.shape[0] == u.shape[0]) or not (m.shape[1] == u.shape[1]):
-        raise TypeError('U and M must be the same size.')
-
-    F = np.zeros(np.shape(u)) 
-    E = copy(F)              
-    Z = copy(E)
-    m = m.flatten()    #make a row vector
-    u = u.flatten()
-
-    if any(m < 0) or any(m > 1):
-        raise TypeError('M must be in the range 0 <= M <= 1.')
-
-    I = np.where((m != 1)&(m != 0))[0]
-    if len(I) != 0:
-        mu,J,K = np.unique(m[I], return_index=True, return_inverse=True)   #extracts unique values from m
-        #K = uint32(K)
-        mumax = len(mu)
-        signU = np.sign(u[I])
-
-        #pre-allocate space and augment if needed
-        chunk = 7
-        a = np.zeros((chunk,mumax))
-        c = copy(a) 
-        b = copy(a)
-        a[0,:] = np.ones(mumax)
-        c[0,:] = np.sqrt(mu)
-        b[0,:] = np.sqrt(1-mu)
-        n = np.zeros((1,mumax), dtype=np.int32)
-        i = 0
-        while any(abs(c[i,:]) > tol):                                    #Arithmetic-Geometric Mean of A, B and C
-            i = i + 1
-            if i >= np.shape(a)[0]:
-                a = np.concatenate((a,np.zeros((2,mumax))))
-                b = np.concatenate((b,np.zeros((2,mumax))))
-                c = np.concatenate((c,np.zeros((2,mumax))))
-            
-            a[i,:] = 0.5 * (a[i-1,:] + b[i-1,:])
-            b[i,:] = np.sqrt(a[i-1,:] * b[i-1,:])
-            c[i,:] = 0.5 * (a[i-1,:] - b[i-1,:])
-            II = np.where((abs(c[i,:]) <= tol) & (abs(c[i-1,:]) > tol))[0]
-            
-            if len(II) != 0:
-                n[II] = np.ones(np.shape(II))*(i-1)
-            
-            if i>100:
-                raise ValueError
-
-        mmax = len(I)
-        mn = np.max(n)
-        phin = np.zeros(mmax)     
-        C  = np.zeros(mmax)    
-        Cp = copy(C)  
-        e  = np.int32(C)  
-        phini = signU*u[I]
-        phin = phini.reshape(phin.shape)
-        i = 0  
-        c2 = c**2
-        while i < mn:                                                    #Descending Landen Transformation 
-            i = i + 1
-            II = np.where(n[K] > i)[0]
-            if len(II) != 0:     
-                phin[II] = np.arctan(b[i,K[II]]/a[i,K[II]]*np.tan(phin[II])) + np.pi*np.ceil(phin[II]/np.pi - 0.5) + phin[II]
-                e[II] = 2**(i-1) 
-                C[II] = C[II]  + float(e[II[0]])*c2[i,K[II]]
-                Cp[II]= Cp[II] + c[i+1,K[II]]*np.sin(phin[II])  
-        
-        Ff = phin / (a[mn,K]*float(e)*2)                                                      
-        F[I] = Ff*signU                                               #Incomplete Ell. Int. of the First Kind
-        Z[I] = Cp*signU                                               #Jacobi Zeta Function
-        E[I] = (Cp + (1 - 1/2*C) * Ff)*signU                         #Incomplete Ell. Int. of the Second Kind
-
-    #Special cases: m == {0, 1}
-    m0 = np.where(m == 0)[0]
-    if len(m0) != 0:
-        F[m0] = u[m0]
-        E[m0] = u[m0]
-        Z[m0] = 0
-
-    m1 = np.where(m == 1)[0]
-    um1 = abs(u[m1]) 
-    if len(m1) != 0: 
-        N = np.floor( (um1+np.pi/2)/np.pi )  
-        M = np.where(um1 < np.pi/2)[0]              
-        
-        F[m1[M]] = np.log(np.tan(np.pi/4 + u[m1[M]]/2))
-        ii = np.where(um1 >= np.pi/2)[0]   
-        F[m1[ii]] = np.inf*np.sign(u[m1[ii]])
-        
-        E[m1] = ((-1)**N * np.sin(um1) + 2*N)*np.sign(u[m1]) 
-        
-        Z[m1] = (-1)**N * np.sin(u[m1])                      
-    
-    return F,E,Z
 def iterable(a):
     try:
         [_ for _ in a]
@@ -461,27 +339,20 @@ def kdelta(i,j):
     return q
 def index6(i):
     """ converts from a vector index to a tensor index"""
-    return [(0,0),(0,1),(0,2),[0,0],[0,1],[1,1]][i]
-    
-def Esh_sol(inp, computeDisp=False, computeStress=False, computeStrain=False, ncpus = 1):
-    
-    
-    return output
-
+    return [(0,0),(0,1),(0,2),(1,1),(1,2),(2,2)][i]
 def run_all(pars, args, ncpus):
     if ncpus != 1:
         p = Pool(ncpus)
-        outs = p.map(run_one, zip([p[-1] for p in pars], [args for i in range(len(pars))]))
+        outs = p.map(run_one, zip([par[-1] for par in pars], [args for i in range(len(pars))]))
     else:
-        outs = [run_one([p[-1], args]) for p in pars]
+        outs = [run_one([par[-1], args]) for par in pars]
     
     return outs
-
 def run_one(inps):
     x,args = inps
-    R, Rb, R_i, Rb_i, vm, dim, eigen, computeDisp, computeD4, computeStress, computeStrain, eigen, incstrain, incstress,epsvec,stressvec,Cm = args
+    R, R_i, vm, dim, computeDisp, computeD4, computeStress, computeStrain, eigen, incstrain, incstress,epsvec,stressvec,Cm = args
 
-    pos = np.dot(np.dot(R_i,Rb),x)
+    pos = np.dot(np.dot(R_i,R),x)
     out = Esh(vm, dim, pos, eigen, computeDisp, computeD4)
     d = np.zeros(3)
     sn = np.zeros(6)
@@ -489,37 +360,27 @@ def run_one(inps):
     
     if computeDisp and computeD4:
         rd4=Cmatrix(out[0])
-        d = np.dot(np.dot(R,Rb_i),out[1])
+        d = np.dot(np.dot(R.T,R_i.T),out[1])
     elif computeDisp:
         rd4=Cmatrix(out)
     elif computeD4:
-        d = np.dot(np.dot(R,Rb_i),out)
+        d = np.dot(np.dot(R.T,R_i.T),out)
 
     if computeD4:
         if pos[0]**2/dim[0]**2+pos[1]**2/dim[1]**2+pos[2]**2/dim[2]**2 <= 1: # for interior points
             if computeStrain:
-                sn = incstrain
+                sn = rotate(incstrain, R_i.T, R.T)
             if computeStress:
-                sr = incstress
+                sr = rotate(incstress, R_i.T, R.T)
         else:
             if computeStrain:
                 strainr = epsvec+np.dot(np.squeeze(rd4),eigen)
-                sn = rotate(strainr, R, Rb_i)
+                sn = rotate(strainr, R_i.T, R.T)
             if computeStress:
                 stressr = stressvec+np.dot(np.dot(Cm,np.squeeze(rd4)),eigen)
-                sr = rotate(stressr, R, Rb_i)
+                sr = rotate(stressr, R_i.T, R.T)
 
     return d, sn, sr
-
-def Esh_D4(vm, a, x, eigen):
-    return Esh(vm, a, x, eigen, computeD4=True)
-
-def Esh_disp(vm, a, x, eigen):
-    return Esh(vm, a, x, eigen, computeDisp=True)
-    
-def Esh_D4_disp(vm, a, x, eigen):
-    return Esh(vm, a, x, eigen, computeDisp=True, computeD4=True)
-
 def Esh(vm, a, x, eigen, computeDisp=False, computeD4=False):
     """
     todo search for todos in function
@@ -559,10 +420,10 @@ def Esh(vm, a, x, eigen, computeDisp=False, computeD4=False):
     # todo this argument was taken from the previous code (with the lmb) and
     # modified with the arcsin.  need to see if can get here via Gradshteyn and
     # Ryzhik from Mura 11.36
-    # k=((a[0]**2-a[1]**2)/(a[0]**2-a[2]**2))**(1/2) # the elliptic modulus
-    m = (a[0]**2-a[1]**2)/(a[0]**2-a[2]**2) # m=k**2 is the parameter
-    F, E, Z = elliptic12(theta, m) #this sets the tolerance to eps, add a third argument to set to a larger tol
-
+    m = np.sqrt((a[0]**2-a[1]**2)/(a[0]**2-a[2]**2)) 
+    F = ellipkinc(theta, m)
+    E = ellipeinc(theta, m)
+    
     #******************************************************************#
     #Calculation of I's
     #******************************************************************#
@@ -571,13 +432,14 @@ def Esh(vm, a, x, eigen, computeDisp=False, computeD4=False):
     Isec = np.zeros((3,3))
     if a[0]==a[1] and a[0]==a[2]:
         # Spherical Case
+        #print('Spherical case..')
         delta = np.sqrt(np.prod(a**2+lmb))
         # can simplify to del3=sqrt((a[0]**2+lmb)**3) for sphere
         Ifir=(4/3)*np.pi*a[0]**3/(np.sqrt(a[0]**2+lmb))**3*np.ones(3)
         Isec=(4/5)*np.pi*a[0]**3/np.sqrt(a[0]**2+lmb)*np.ones((3,3))  # todo: i changed the 5/2 to 1/2 to make units right--not sure if correct
 
     elif a[0]>a[1] and a[2]==a[1]:
-        #fprintf('Prolate case..\n')
+        #print('Prolate case..')
         
         delta=np.sqrt((a[0]**2+lmb)*(a[1]**2+lmb)*(a[2]**2+lmb))
         bbar=np.sqrt(a[0]**2+lmb)/np.sqrt(a[2]**2+lmb)
@@ -598,7 +460,7 @@ def Esh(vm, a, x, eigen, computeDisp=False, computeD4=False):
         Isec[2,2]=Isec[1,2]
         
     elif a[0]==a[1]and a[1]>a[2]:
-        #fprntf('Oblate case...\n')
+        #print('Oblate case...')
         delta=np.sqrt((a[0]**2+lmb)*(a[1]**2+lmb)*(a[2]**2+lmb))
         bnonbar=np.sqrt(a[2]**2+lmb)/np.sqrt(a[0]**2+lmb)
         dnonbar=np.sqrt(a[0]**2-a[2]**2)/np.sqrt(a[0]**2+lmb)
@@ -619,7 +481,7 @@ def Esh(vm, a, x, eigen, computeDisp=False, computeD4=False):
         Isec[1,1]=Isec[0,0]
         Isec[2,2]=((4*np.pi*np.prod(a))/((a[2]**2+lmb)*delta)-Isec[0,2]-Isec[1,2])/3
     else:
-        #fprintf('triaxial ellipsoid case ..\n')
+        #print('triaxial ellipsoid case ..')
         delta=np.sqrt((a[0]**2+lmb)*(a[1]**2+lmb)*(a[2]**2+lmb))
         I=4*np.pi*np.prod(a)*F/np.sqrt(a[0]**2-a[2]**2)
         Ifir[0]=I*(1-E/F)/(a[0]**2-a[1]**2)
@@ -766,7 +628,7 @@ def Esh(vm, a, x, eigen, computeDisp=False, computeD4=False):
         for i in range(3):
             for j in range(3):
                 for l in range(3):            
-                        tderpsi[i,j,l]=-kdelta(i,j)*x[l]*(Ifir[l]-a[i]**2*Isec[i,l])-x[i]*x[j]*(fderIfir[j,l]-a[i]**2*fderIsec[i,j,l])-(kdelta(i,l)*x[j]+kdelta(j,l)*x[i])*(Ifir[j]-a[i]**2*Isec[i,j])
+                    tderpsi[i,j,l]=-kdelta(i,j)*x[l]*(Ifir[l]-a[i]**2*Isec[i,l])-x[i]*x[j]*(fderIfir[j,l]-a[i]**2*fderIsec[i,j,l])-(kdelta(i,l)*x[j]+kdelta(j,l)*x[i])*(Ifir[j]-a[i]**2*Isec[i,j])
       
     if computeD4:
         foderpsi  = np.zeros((3,3,3,3))
@@ -803,18 +665,267 @@ def Esh(vm, a, x, eigen, computeDisp=False, computeD4=False):
         return D4
     elif computeDisp:
         return u
+def isiterable(inp):
+    try:
+        [_ for _ in inp]
+        return True
+    except TypeError:
+        return False
+
+# validate against figures in Meng
+def meng_fig1():
 
 
-if __name__ == "__main__":
-    inc = Inclusion()
-    inc.gridx = np.array([0,])
-    inc.gridy = np.arange(-25,25,2.5)
-    inc.gridz = np.arange(-25,25,2.5)
+    ayaxs = [100, 50, 5, 1, 0.5, 0.25, 0.125, 0.01]
+    #ayaxs = [1.-1.e-6, 1+1.e-6]
 
-    inc.solve(computeDisp=True, computeStress=True, computeStrain=True, ncpus=2)
+    f,ax = plt.subplots(1,1,figsize=(8,8))
+    for ayax in ayaxs:
+        inc = Inclusion()
+        inc.dim = [2., 2*ayax, 4.]
+        #inc.x = np.linspace(2,10,51)
+        inc.x = 2.+(np.logspace(-4, 0, 21)-0*2.e-4)*8.
+        inc.y = 0.0
+        inc.z = 0
 
-    #inc.sol = Esh_sol(inc, computeDisp=True, computeStress=True, computeStrain=True, ncpus=2)
+        inc.vm = 0.15
+        inc.Em = 2.2e10
+        inc.vh = 0.15
+        inc.Eh = 2.2e10
+        inc.stressvec = [0, 0, 0, 0, 0, 0]
+        inc.eigp = [1.e-3, 0, 0, 1.e-3, 0, 1.e-3]
+            
+        inc.solve(ncpus=1)
+
+        x = inc.sol.x.squeeze()
+        eyy = inc.sol.e['yy'].squeeze()
+        ax.plot(x, np.log10(eyy), 'k-')
+        
+    ax.set_ylabel('log$_{10}\epsilon_{yy}$')
+    ax.set_xlabel('x')
+    ax.set_xlim([2,10])
+    ax.set_ylim([-7.5, -2.5])
+    plt.show()
+def meng_fig2():
     
+
+    azays = [0.25, 0.5, 0.6, 1, 2, 4]
+    #ayaxs = [1.-1.e-6, 1+1.e-6]
+    #azays = [1,1.001]
+
+    f,ax = plt.subplots(1,1,figsize=(8,8))
+    cs = ['k','r']
+    cs = ['k']*len(azays)
+    for azay,c in zip(azays,cs):
+        inc = Inclusion()
+        inc.dim = [0.1, 1, azay]
+        #inc.x = np.linspace(2,10,51)
+        inc.x = 0.+(np.logspace(-2, 0, 41)-0*2.e-4)*2.5
+        inc.y = 0.4
+        inc.z = 0.4
+
+        inc.vm = 0.15
+        inc.Em = 2.2e10
+        inc.vh = 0.
+        inc.Eh = 0.
+        inc.stressvec = [1.e6, 0, 0, 0, 0, 0]
+        inc.eigp = [0., 0, 0, 0., 0, 0.]
+            
+        inc.solve(ncpus=1)
+
+        x = inc.sol.x.squeeze()
+        sxx = inc.sol.s['xx'].squeeze()
+        ax.plot(x, sxx/1.e5, c+'-')
+        
+    ax.set_ylabel('$\sigma_{xx}$')
+    ax.set_xlabel('x')
+    ax.set_xlim([0,2.5])
+    ax.set_ylim([-2, 14])
+    plt.show()
+def meng_fig3():
+    azays = [10, 15, 20, 30, 60, 1000]
+    #ayaxs = [1.-1.e-6, 1+1.e-6]
+    #azays = [1,1.001]
+
+    f,ax = plt.subplots(1,1,figsize=(8,8))
+    ax2 = ax.twinx()
+    cs = ['k','r']
+    cs = ['k']*len(azays)
+    for azay,c in zip(azays,cs):
+        inc = Inclusion()
+        inc.dim = [0.2, 1, azay]
+        #inc.x = np.linspace(2,10,51)
+        inc.x = 0.+np.logspace(-2, 0, 41)*0.5
+        inc.x = np.concatenate([inc.x, np.array([100.,])])
+        inc.y = 1.1
+        inc.z = 5.
+
+        inc.vm = 0.25
+        inc.Em = 2.2e10
+        inc.vh = 0.
+        inc.Eh = 0.
+        inc.stressvec = [1.e6, 0, 0, -1.e6, 0, 0]
+        inc.eigp = [0., 0, 0, 0., 0, 0.]
+            
+        inc.solve(ncpus=1)
+
+        x = inc.sol.x.squeeze()
+        sxx = inc.sol.s['xx'].squeeze()
+        ax.plot(x, np.log10(sxx), c+'-')
+        uy = inc.sol.u['y'].squeeze()
+        ax2.plot(x, uy*1.e6/np.pi, 'r-')
+        #print(uy[-1])  
+    ax.set_ylabel('$\sigma_{xx}$')
+    ax.set_xlabel('x')
+    ax.set_xlim([0,0.5])
+    ax.set_ylim([6.15, 6.45])
+    ax2.set_ylabel('$u_y-u_y^{\inf}$')
+    ax2.set_ylim([-14, -2])
+    plt.show()
+def meng_fig5():
+    
+
+    axays = [0.2,1,2,3,4,5]
+    
+    f,ax = plt.subplots(1,1,figsize=(8,8))
+    cs = ['k','r']
+    cs = ['k']*len(axays)
+    for axay,c in zip(axays,cs):
+        inc = Inclusion()
+        inc.dim = [axay, 1, 1.e3]
+        #inc.x = np.linspace(2,10,51)
+        inc.x = 0.+(np.linspace(0,1, 101)-0*2.e-4)*5
+        inc.y = 1
+        inc.z = 0.
+
+        inc.vm = 0.25
+        inc.Em = 2.2e10
+        inc.vh = 0.
+        inc.Eh = 0.
+        inc.stressvec = [1.e6, 0, 0, -1.e6, 0, 0]
+        inc.eigp = [0., 0, 0, 0., 0, 0.]
+            
+        inc.solve(ncpus=1)
+
+        x = inc.sol.x.squeeze()
+        sxx = inc.sol.s['xx'].squeeze()
+        ax.plot(x, np.log10(sxx), c+'-')
+        
+    ax.set_ylabel('log$_{10}\sigma_{xx}$')
+    ax.set_xlabel('x')
+    ax.set_xlim([0,5])
+    ax.set_ylim([5.8, 6.65])
+    plt.show()
+def meng_fig6():
+    
+
+    ayaxs = [0.01, 0.04, 0.08, 0.1]
+    
+    f,ax = plt.subplots(1,1,figsize=(8,8))
+    cs = ['k','r']
+    cs = ['k']*len(ayaxs)
+    for ayax,c in zip(ayaxs,cs):
+        inc = Inclusion()
+        inc.dim = [1, ayax, 1.e3]
+        #inc.x = np.linspace(2,10,51)
+        inc.x = np.linspace(0.99,1.01, 41)
+        inc.y = 0.01
+        inc.z = 0.
+
+        inc.vm = 0.25
+        inc.Em = 2.2e10
+        inc.vh = 0.
+        inc.Eh = 0.
+        inc.stressvec = [0, 0, 0, 1.e6, 0, 0]
+        inc.eigp = [0., 0, 0, 0., 0, 0.]
+            
+        inc.solve(ncpus=1)
+
+        x = inc.sol.x.squeeze()
+        syy = inc.sol.s['yy'].squeeze()
+        ax.plot(x, np.log10(syy), c+'-')
+        
+    ax.set_ylabel('log$_{10}\sigma_{yy}$')
+    ax.set_xlabel('x')
+    ax.set_xlim([0.99,1.01])
+    ax.set_ylim([6, 7.1])
+    plt.show()
+def meng_fig7():
+    
+
+    ayaxs = [0.01, 0.04, 0.08, 0.1]
+    
+    f,ax = plt.subplots(1,1,figsize=(8,8))
+    cs = ['k','r']
+    cs = ['k']*len(ayaxs)
+    for ayax,c in zip(ayaxs,cs):
+        inc = Inclusion()
+        inc.dim = [1, ayax, 1.e3]
+        #inc.x = np.linspace(2,10,51)
+        inc.x = np.linspace(0.99,1.01, 41)
+        inc.y = 0.01
+        inc.z = 0.
+
+        inc.vm = 0.25
+        inc.Em = 2.2e10
+        inc.vh = 0.
+        inc.Eh = 0.
+        inc.stressvec = [0, 1.e6, 0, 0., 0, 0]
+        inc.eigp = [0., 0, 0, 0., 0, 0.]
+            
+        inc.solve(ncpus=1)
+
+        x = inc.sol.x.squeeze()
+        sxy = inc.sol.s['xy'].squeeze()
+        ax.plot(x, np.log10(sxy), c+'-')
+        
+    ax.set_ylabel('log$_{10}\sigma_{xy}$')
+    ax.set_xlabel('x')
+    ax.set_xlim([0.99,1.01])
+    ax.set_ylim([6, 7.1])
+    plt.show()
+def meng_fig8():
+    ayaxs = [0.01, 0.04, 0.08, 0.1]
+    
+    f,ax = plt.subplots(1,1,figsize=(8,8))
+    cs = ['k','r']
+    cs = ['k']*len(ayaxs)
+    for ayax,c in zip(ayaxs,cs):
+        inc = Inclusion()
+        inc.dim = [1, ayax, 1.e3]
+        #inc.x = np.linspace(2,10,51)
+        inc.x = np.linspace(0.99,1.01, 41)
+        inc.y = 0.01
+        inc.z = 0.
+
+        inc.vm = 0.25
+        inc.Em = 2.2e10
+        inc.vh = 0.
+        inc.Eh = 0.
+        inc.stressvec = [0, 0., 0, 0., 1.e6, 0]
+        inc.eigp = [0., 0, 0, 0., 0, 0.]
+            
+        inc.solve(ncpus=1)
+
+        x = inc.sol.x.squeeze()
+        syz = inc.sol.s['yz'].squeeze()
+        ax.plot(x, np.log10(syz), c+'-')
+        
+    ax.set_ylabel('log$_{10}\sigma_{yz}$')
+    ax.set_xlabel('x')
+    ax.set_xlim([0.99,1.01])
+    ax.set_ylim([6, 7.1])
+    plt.show()
+if __name__ == "__main__":
+    #meng_fig1()
+    #meng_fig2()
+    #meng_fig3()
+    #meng_fig5()
+    #meng_fig6()
+    #meng_fig7()
+    meng_fig8()
+    
+    '''
     f,ax = plt.subplots(1,1,figsize=(8,8))
     x = inc.sol.x.squeeze()
     y = inc.sol.y.squeeze()
@@ -822,6 +933,7 @@ if __name__ == "__main__":
     u = inc.sol.disp.squeeze()[:,:,0]
     umin = u.min()
     umax = u.max()
-    cax = ax.contourf(y,z,u, levels = np.linspace(umin, umax,11))
+    cax = ax.contourf(y,z,u, levels = np.linspace(umin, umax, 11))
     plt.colorbar(cax)
     plt.show()
+    '''
