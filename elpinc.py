@@ -415,14 +415,6 @@ def Esh(vm, a, x, eigen, computeDisp=False, computeD4=False):
             if np.isreal(lmbroots[i]) and lmbroots[i]>lmb:
                 lmb = lmbroots[i]
 
-    theta = np.arcsin(np.sqrt((a[0]**2-a[2]**2)/(a[0]**2+lmb))) # the amplitude
-    
-    # todo this argument was taken from the previous code (with the lmb) and
-    # modified with the arcsin.  need to see if can get here via Gradshteyn and
-    # Ryzhik from Mura 11.36
-    m = np.sqrt((a[0]**2-a[1]**2)/(a[0]**2-a[2]**2)) 
-    F = ellipkinc(theta, m)
-    E = ellipeinc(theta, m)
     
     #******************************************************************#
     #Calculation of I's
@@ -481,6 +473,16 @@ def Esh(vm, a, x, eigen, computeDisp=False, computeD4=False):
         Isec[1,1]=Isec[0,0]
         Isec[2,2]=((4*np.pi*np.prod(a))/((a[2]**2+lmb)*delta)-Isec[0,2]-Isec[1,2])/3
     else:
+        
+        theta = np.arcsin(np.sqrt((a[0]**2-a[2]**2)/(a[0]**2+lmb))) # the amplitude
+        
+        # todo this argument was taken from the previous code (with the lmb) and
+        # modified with the arcsin.  need to see if can get here via Gradshteyn and
+        # Ryzhik from Mura 11.36
+        m = np.sqrt((a[0]**2-a[1]**2)/(a[0]**2-a[2]**2)) 
+        F = ellipkinc(theta, m)
+        E = ellipeinc(theta, m)
+
         #print('triaxial ellipsoid case ..')
         delta=np.sqrt((a[0]**2+lmb)*(a[1]**2+lmb)*(a[2]**2+lmb))
         I=4*np.pi*np.prod(a)*F/np.sqrt(a[0]**2-a[2]**2)
